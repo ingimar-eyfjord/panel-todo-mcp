@@ -217,7 +217,15 @@ function readTodos() {
 
   try {
     const data = readFileSync(todoFile, 'utf-8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Handle both formats: flat array or {todos: [...], updatedAt: ...}
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (parsed && Array.isArray(parsed.todos)) {
+      return parsed.todos;
+    }
+    return [];
   } catch (err) {
     console.error('Error reading todos:', err);
     return [];
@@ -226,13 +234,19 @@ function readTodos() {
 
 /**
  * Write todos to project's .vscode folder
+ * Uses the extension's format: {todos: [...], updatedAt: ...}
  */
 function writeTodos(todos) {
   ensureVscodeDir();
   const todoFile = getTodoFile();
 
   try {
-    writeFileSync(todoFile, JSON.stringify(todos, null, 2));
+    // Use extension's format for compatibility
+    const data = {
+      todos,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(todoFile, JSON.stringify(data, null, 2));
   } catch (err) {
     console.error('Error writing todos:', err);
     throw err;
@@ -242,8 +256,180 @@ function writeTodos(todos) {
 // Initialize MCP server
 const server = new McpServer({
   name: 'panel-todo',
-  version: '0.1.0',
+  version: '0.2.0',
+  description: `Panel Todo - Persistent task management for AI-assisted coding sessions.
+
+CRITICAL FOR AI ASSISTANTS:
+You may have your own internal todo/task tracking system - that's fine for your own use.
+BUT when Panel Todo MCP is available, ALWAYS ALSO write tasks to Panel Todo because:
+1. Tasks persist to disk and survive session restarts
+2. The user can see all tasks in VS Code's Panel area
+3. Future AI sessions can read these tasks and continue where you left off
+4. This maintains context across multiple coding sessions - THE WHOLE POINT
+
+At the START of each session:
+1. Call panelTodo_status to check configuration
+2. Call panelTodo_listIssues (Pro) or panelTodo_list (Free) to see existing tasks
+3. Review in-progress work before starting anything new
+
+During work:
+- Create issues/todos for any significant work
+- Update status as you progress (todo → in_progress → done)
+- Add comments to document decisions and progress
+- Reference issue keys in commits (e.g., "Fix bug [PT-42]")`,
 });
+
+// ============================================================================
+// LLM INSTRUCTION RESOURCE
+// ============================================================================
+
+// Provide clear instructions for AI assistants on how to use Panel Todo
+server.registerResource(
+  'instructions',
+  'panel-todo://instructions',
+  {
+    title: 'Panel Todo Usage Instructions for AI Assistants',
+    description: 'Guidelines for AI assistants on when and how to use Panel Todo',
+    mimeType: 'text/markdown',
+  },
+  async () => {
+    return {
+      contents: [{
+        uri: 'panel-todo://instructions',
+        mimeType: 'text/markdown',
+        text: \`# Panel Todo - AI Assistant Guidelines
+
+## WHY Panel Todo Exists
+
+Panel Todo solves the **context problem** in AI-assisted coding:
+- Your internal todo list dies when the session ends
+- The user can't see what you're tracking
+- The next AI session starts from scratch with no memory
+
+Panel Todo fixes this by:
+- Persisting tasks to disk (survives restarts)
+- Showing tasks in VS Code's Panel (user visibility)
+- Letting future sessions read previous work (context continuity)
+
+## The Golden Rule
+
+**You can use your internal todo system for your own tracking.**
+**But ALWAYS ALSO write to Panel Todo when it's available.**
+
+This way:
+- You have your internal tracking for the current session
+- The user sees progress in VS Code
+- Future sessions can pick up where you left off
+
+## Starting Every Session
+
+ALWAYS do this at the start of a coding session:
+
+\\\`\\\`\\\`javascript
+// 1. Check what's available
+panelTodo_status()
+
+// 2. Read existing work (Pro)
+panelTodo_listIssues()
+// Or for Free tier:
+panelTodo_list()
+
+// 3. Check what's in progress
+panelTodo_listIssues({ status: "in_progress" })
+\\\`\\\`\\\`
+
+If there are in-progress issues, **ask the user if they want to continue that work** before starting something new.
+
+## During Development
+
+### When user requests work:
+\\\`\\\`\\\`javascript
+// Create a trackable issue
+panelTodo_addIssue({
+  title: "Add email validation to signup form",
+  priority: "high"
+})
+// Note the returned key (e.g., "PT-3") for reference
+\\\`\\\`\\\`
+
+### As you work:
+\\\`\\\`\\\`javascript
+// Mark as in progress
+panelTodo_updateIssue({ issueId: "<id>", status: "in_progress" })
+
+// Document important decisions
+panelTodo_addComment({
+  issueId: "<id>",
+  content: "Using zod for validation because it integrates with existing form library"
+})
+\\\`\\\`\\\`
+
+### When done:
+\\\`\\\`\\\`javascript
+panelTodo_completeIssue({ issueId: "<id>" })
+\\\`\\\`\\\`
+
+### In commit messages:
+Reference issue keys so they're linked:
+- "Add email validation [PT-3]"
+- "Fix auth bug (resolves PT-42)"
+
+## Free vs Pro Tier
+
+**FREE (local todos):**
+- Stored in project's .vscode folder
+- Simple text-based todos
+- Good for quick tasks
+- Tools: add, list, update, complete, remove
+
+**PRO (cloud issues):**
+- Full issue tracking with status/priority
+- Sprints for planning
+- Tags for categorization
+- Comments for context
+- Syncs across devices
+- Tools: all issue, sprint, project, tag, comment tools
+
+## Best Practices
+
+1. **Be Specific**: "Add email validation to signup form" not "Fix form"
+
+2. **Use Priorities**:
+   - critical: Production bugs, blocking issues
+   - high: Important features
+   - medium: Normal work
+   - low: Nice-to-haves
+
+3. **Update Status**: Don't leave issues in "todo" while working on them
+
+4. **Add Comments**: Document WHY decisions were made - future sessions will thank you
+
+5. **Use Tags**: Categorize (bug, feature, refactor) for easy filtering
+
+## Tool Quick Reference
+
+| Action | Tool |
+|--------|------|
+| Check setup | panelTodo_status |
+| Add quick todo | panelTodo_add |
+| List todos | panelTodo_list |
+| Update todo | panelTodo_update |
+| Create issue | panelTodo_addIssue |
+| List issues | panelTodo_listIssues |
+| Get issue by key | panelTodo_getIssue |
+| Update issue | panelTodo_updateIssue |
+| Complete issue | panelTodo_completeIssue |
+| Delete issue | panelTodo_deleteIssue |
+| Add comment | panelTodo_addComment |
+| List comments | panelTodo_listComments |
+| Create tag | panelTodo_createTag |
+| Create sprint | panelTodo_createSprint |
+| Move to sprint | panelTodo_moveIssueToSprint |
+\\\`
+      }],
+    };
+  }
+);
 
 // ============================================================================
 // TODO TOOLS (Free - Local Storage)
@@ -395,6 +581,50 @@ server.registerTool(
     const output = { success: true, message: `Removed: "${removed.text}"` };
     return {
       content: [{ type: 'text', text: `Removed todo: "${removed.text}"` }],
+      structuredContent: output,
+    };
+  }
+);
+
+// Tool: Update a todo's text
+server.registerTool(
+  'panelTodo_update',
+  {
+    title: 'Update Todo',
+    description: 'Update the text of an existing todo item',
+    inputSchema: {
+      id: z.string().describe('The todo ID to update'),
+      text: z.string().min(1).describe('The new todo text'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+      todo: z.object({
+        id: z.string(),
+        text: z.string(),
+        completed: z.boolean(),
+        createdAt: z.string(),
+      }).optional(),
+    },
+  },
+  async ({ id, text }) => {
+    const todos = readTodos();
+    const todo = todos.find(t => t.id === id);
+
+    if (!todo) {
+      const output = { success: false, message: 'Todo not found' };
+      return {
+        content: [{ type: 'text', text: `Error: Todo with ID "${id}" not found` }],
+        structuredContent: output,
+      };
+    }
+
+    todo.text = text;
+    writeTodos(todos);
+
+    const output = { success: true, message: 'Todo updated', todo };
+    return {
+      content: [{ type: 'text', text: `Updated todo: "${text}"` }],
       structuredContent: output,
     };
   }
@@ -641,6 +871,117 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error completing issue: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Delete issue
+server.registerTool(
+  'panelTodo_deleteIssue',
+  {
+    title: 'Delete Issue',
+    description: 'Permanently delete an issue from Panel Todo Pro',
+    inputSchema: {
+      issueId: z.string().describe('Issue ID to delete'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+    },
+  },
+  async ({ issueId }) => {
+    if (!isProEnabled()) {
+      return {
+        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
+        structuredContent: { success: false, message: 'Pro not configured' },
+      };
+    }
+
+    try {
+      await apiRequest(`/v1/issues/${issueId}`, {
+        method: 'DELETE',
+      });
+
+      return {
+        content: [{ type: 'text', text: `Deleted issue ${issueId}` }],
+        structuredContent: { success: true, message: 'Issue deleted' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error deleting issue: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Get single issue by ID or key
+server.registerTool(
+  'panelTodo_getIssue',
+  {
+    title: 'Get Issue',
+    description: 'Get details of a specific issue by ID or key (e.g., "PT-1")',
+    inputSchema: {
+      issueId: z.string().optional().describe('Issue ID (UUID)'),
+      key: z.string().optional().describe('Issue key (e.g., "PT-1", "WORK-42")'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      issue: z.object({
+        id: z.string(),
+        key: z.string(),
+        title: z.string(),
+        status: z.string(),
+        priority: z.string(),
+      }).optional(),
+      message: z.string().optional(),
+    },
+  },
+  async ({ issueId, key }) => {
+    if (!isProEnabled()) {
+      return {
+        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
+        structuredContent: { success: false, message: 'Pro not configured' },
+      };
+    }
+
+    if (!issueId && !key) {
+      return {
+        content: [{ type: 'text', text: 'Either issueId or key is required' }],
+        structuredContent: { success: false, message: 'Either issueId or key is required' },
+      };
+    }
+
+    const config = getConfig();
+
+    try {
+      // If key is provided, search for the issue
+      if (key && !issueId) {
+        const data = await apiRequest(`/v1/projects/${config.projectId}/issues`);
+        const issue = (data.issues || []).find(i => i.key.toLowerCase() === key.toLowerCase());
+        if (!issue) {
+          return {
+            content: [{ type: 'text', text: `Issue with key "${key}" not found` }],
+            structuredContent: { success: false, message: 'Issue not found' },
+          };
+        }
+        return {
+          content: [{ type: 'text', text: `Found issue: [${issue.key}] ${issue.title} (${issue.status})` }],
+          structuredContent: { success: true, issue },
+        };
+      }
+
+      // Get by ID
+      const issue = await apiRequest(`/v1/issues/${issueId}`);
+      return {
+        content: [{ type: 'text', text: `Found issue: [${issue.key}] ${issue.title} (${issue.status})` }],
+        structuredContent: { success: true, issue },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error getting issue: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }
@@ -1313,6 +1654,105 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error removing tag: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// ============================================================================
+// COMMENT TOOLS (Pro - Backend API)
+// ============================================================================
+
+// Tool: List comments on an issue
+server.registerTool(
+  'panelTodo_listComments',
+  {
+    title: 'List Comments',
+    description: 'List all comments on an issue',
+    inputSchema: {
+      issueId: z.string().describe('Issue ID to get comments for'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      comments: z.array(z.object({
+        id: z.string(),
+        content: z.string(),
+        created_at: z.string(),
+      })),
+      count: z.number(),
+    },
+  },
+  async ({ issueId }) => {
+    if (!isProEnabled()) {
+      return {
+        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
+        structuredContent: { success: false, comments: [], count: 0 },
+      };
+    }
+
+    try {
+      const data = await apiRequest(`/v1/issues/${issueId}/comments`);
+      const comments = data.comments || [];
+
+      const text = comments.length > 0
+        ? `${comments.length} comment(s):\n${comments.map(c => `- ${c.content}`).join('\n')}`
+        : 'No comments on this issue';
+
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: { success: true, comments, count: comments.length },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error listing comments: ${err.message}` }],
+        structuredContent: { success: false, comments: [], count: 0 },
+      };
+    }
+  }
+);
+
+// Tool: Add comment to an issue
+server.registerTool(
+  'panelTodo_addComment',
+  {
+    title: 'Add Comment',
+    description: 'Add a comment to an issue',
+    inputSchema: {
+      issueId: z.string().describe('Issue ID to comment on'),
+      content: z.string().min(1).describe('Comment text'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      comment: z.object({
+        id: z.string(),
+        content: z.string(),
+        created_at: z.string(),
+      }).optional(),
+      message: z.string(),
+    },
+  },
+  async ({ issueId, content }) => {
+    if (!isProEnabled()) {
+      return {
+        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
+        structuredContent: { success: false, message: 'Pro not configured' },
+      };
+    }
+
+    try {
+      const comment = await apiRequest(`/v1/issues/${issueId}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      });
+
+      return {
+        content: [{ type: 'text', text: `Comment added to issue` }],
+        structuredContent: { success: true, comment, message: 'Comment added' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error adding comment: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }

@@ -1,7 +1,7 @@
 {
   "name": "panel-todo-mcp",
-  "version": "0.0.1",
-  "description": "MCP server for Panel Todo - allows AI assistants to manage your todo list",
+  "version": "0.2.0",
+  "description": "MCP server for Panel Todo - 29 tools for AI assistants to manage todos, issues, sprints, tags, and comments",
   "type": "module",
   "bin": {
     "panel-todo-mcp": "./index.js"
@@ -15,12 +15,16 @@
     "model-context-protocol",
     "claude",
     "todo",
-    "vscode"
+    "vscode",
+    "issue-tracker",
+    "project-management",
+    "ai-assistant"
   ],
   "author": "Panel Todo",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.4"
   },
   "engines": {
     "node": ">=18.0.0"
