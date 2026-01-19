@@ -14,16 +14,20 @@
  *
  * Issue Tools (Pro - API):
  *   - panelTodo_listIssues: List all issues
+ *   - panelTodo_searchIssues: Search issues with text query and filters
  *   - panelTodo_addIssue: Create a new issue
+ *   - panelTodo_batchCreateIssues: Create multiple issues at once
  *   - panelTodo_updateIssue: Update an issue
  *   - panelTodo_completeIssue: Mark issue as done
  *
  * Sprint Tools (Pro - API):
  *   - panelTodo_listSprints: List all sprints
  *   - panelTodo_createSprint: Create a new sprint
+ *   - panelTodo_updateSprint: Update sprint name or dates
  *   - panelTodo_startSprint: Start a sprint
  *   - panelTodo_completeSprint: Complete a sprint
  *   - panelTodo_moveIssueToSprint: Move an issue to a sprint
+ *   - panelTodo_getBacklog: Get issues in the backlog
  *
  * Project Tools (Pro - API):
  *   - panelTodo_listProjects: List all your projects
@@ -67,8 +71,36 @@ function ensureVscodeDir() {
 }
 
 // API configuration
-const DEFAULT_API_URL = 'https://api.paneltodo.com';
+const DEFAULT_API_URL = 'https://api.panel-todo.com';
 const DEV_API_URL = 'http://localhost:3000';
+
+// Pro setup instructions (shown when Pro features are used without configuration)
+const PRO_SETUP_MESSAGE = `Panel Todo Pro is not configured.
+
+To use Pro features (issues, sprints, projects), you need:
+1. A Panel Todo Pro subscription - sign up at https://panel-todo.com
+2. An API token from the VS Code extension
+
+SETUP STEPS:
+1. Install the Panel Todo VS Code extension
+2. Sign in and subscribe to Pro at https://panel-todo.com
+3. In VS Code: Open Panel Todo → Account tab → Create API Token
+4. Copy the token (starts with "pt_")
+5. Tell me: "Configure Panel Todo with token: pt_YOUR_TOKEN_HERE"
+
+I'll then call panelTodo_configure to set it up.
+
+FREE TIER: You can still use panelTodo_add, panelTodo_list, panelTodo_complete, and panelTodo_remove for local todo management without Pro.`;
+
+/**
+ * Helper to create a "Pro not configured" response
+ */
+function proNotConfiguredResponse(structuredExtra = {}) {
+  return {
+    content: [{ type: 'text', text: PRO_SETUP_MESSAGE }],
+    structuredContent: { success: false, message: 'Pro not configured', ...structuredExtra },
+  };
+}
 
 /**
  * Get the path to local project config file
@@ -162,11 +194,21 @@ function getApiUrl() {
 }
 
 /**
- * Make API request to backend
+ * Make API request to backend with automatic rate limit handling.
+ *
+ * Rate Limiting: The backend allows 100 requests per minute per user.
+ * If you hit the rate limit (429), this function automatically waits
+ * and retries up to 3 times with exponential backoff.
+ *
+ * Tips to avoid rate limits:
+ * - Use bulk operations: panelTodo_batchCreateIssues instead of multiple panelTodo_addIssue
+ * - Use panelTodo_searchIssues with filters instead of fetching all + filtering client-side
+ * - Cache results when doing read-heavy operations
  */
-async function apiRequest(path, options = {}) {
+async function apiRequest(path, options = {}, retryCount = 0) {
   const config = getConfig();
   const apiUrl = getApiUrl();
+  const MAX_RETRIES = 3;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -187,6 +229,20 @@ async function apiRequest(path, options = {}) {
     ...options,
     headers,
   });
+
+  // Handle rate limiting (429 Too Many Requests)
+  if (response.status === 429 && retryCount < MAX_RETRIES) {
+    // Get retry-after header or use exponential backoff
+    const retryAfter = response.headers.get('Retry-After');
+    const waitSeconds = retryAfter ? parseInt(retryAfter, 10) : Math.pow(2, retryCount + 1);
+    const waitMs = Math.min(waitSeconds * 1000, 30000); // Max 30 seconds
+
+    // Wait before retrying
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+
+    // Retry the request
+    return apiRequest(path, options, retryCount + 1);
+  }
 
   if (!response.ok) {
     const error = await response.text();
@@ -259,6 +315,16 @@ const server = new McpServer({
   version: '0.2.0',
   description: `Panel Todo - Persistent task management for AI-assisted coding sessions.
 
+TWO TIERS:
+• FREE: Local todos (panelTodo_add/list/complete/remove) - works immediately, no setup needed
+• PRO (€4.90/mo): Issues, sprints, projects, tags, comments - requires setup (see below)
+
+PRO SETUP (if user wants Pro features):
+1. Subscribe at https://panel-todo.com
+2. In VS Code: Panel Todo extension → Account tab → Create API Token
+3. User gives you the token (starts with "pt_")
+4. Call: panelTodo_configure with projectId and token
+
 CRITICAL FOR AI ASSISTANTS:
 You may have your own internal todo/task tracking system - that's fine for your own use.
 BUT when Panel Todo MCP is available, ALWAYS ALSO write tasks to Panel Todo because:
@@ -275,8 +341,14 @@ At the START of each session:
 During work:
 - Create issues/todos for any significant work
 - Update status as you progress (todo → in_progress → done)
-- Add comments to document decisions and progress
-- Reference issue keys in commits (e.g., "Fix bug [PT-42]")`,
+- Add comments to document decisions and progress (Pro)
+- Reference issue keys in commits (e.g., "Fix bug [PROJ-42]")
+
+RATE LIMITING:
+- API allows 100 requests/minute (shared across all VS Code windows)
+- Automatic retry with backoff on 429 - no manual handling needed
+- Use panelTodo_batchCreateIssues for multiple issues (1 request vs N)
+- Use panelTodo_searchIssues with filters instead of fetching all + filtering`,
 });
 
 // ============================================================================
@@ -297,7 +369,7 @@ server.registerResource(
       contents: [{
         uri: 'panel-todo://instructions',
         mimeType: 'text/markdown',
-        text: \`# Panel Todo - AI Assistant Guidelines
+        text: `# Panel Todo - AI Assistant Guidelines
 
 ## WHY Panel Todo Exists
 
@@ -325,7 +397,7 @@ This way:
 
 ALWAYS do this at the start of a coding session:
 
-\\\`\\\`\\\`javascript
+\`\`\`javascript
 // 1. Check what's available
 panelTodo_status()
 
@@ -336,24 +408,24 @@ panelTodo_list()
 
 // 3. Check what's in progress
 panelTodo_listIssues({ status: "in_progress" })
-\\\`\\\`\\\`
+\`\`\`
 
 If there are in-progress issues, **ask the user if they want to continue that work** before starting something new.
 
 ## During Development
 
 ### When user requests work:
-\\\`\\\`\\\`javascript
+\`\`\`javascript
 // Create a trackable issue
 panelTodo_addIssue({
   title: "Add email validation to signup form",
   priority: "high"
 })
 // Note the returned key (e.g., "PT-3") for reference
-\\\`\\\`\\\`
+\`\`\`
 
 ### As you work:
-\\\`\\\`\\\`javascript
+\`\`\`javascript
 // Mark as in progress
 panelTodo_updateIssue({ issueId: "<id>", status: "in_progress" })
 
@@ -362,12 +434,12 @@ panelTodo_addComment({
   issueId: "<id>",
   content: "Using zod for validation because it integrates with existing form library"
 })
-\\\`\\\`\\\`
+\`\`\`
 
 ### When done:
-\\\`\\\`\\\`javascript
+\`\`\`javascript
 panelTodo_completeIssue({ issueId: "<id>" })
-\\\`\\\`\\\`
+\`\`\`
 
 ### In commit messages:
 Reference issue keys so they're linked:
@@ -406,6 +478,45 @@ Reference issue keys so they're linked:
 
 5. **Use Tags**: Categorize (bug, feature, refactor) for easy filtering
 
+## Rate Limiting
+
+The API has a rate limit of **100 requests per minute** (shared across all MCP instances and VS Code windows for the same user).
+
+**Automatic retry:** If you hit the rate limit, the MCP will automatically wait and retry up to 3 times with exponential backoff. You don't need to handle 429 errors yourself.
+
+**Best practices to stay within limits:**
+
+1. **Use bulk operations** when creating multiple items:
+   \`\`\`javascript
+   // GOOD: One request for 10 issues
+   panelTodo_batchCreateIssues({ issues: [...tenIssues] })
+
+   // BAD: 10 separate requests
+   for (issue of tenIssues) { panelTodo_addIssue(issue) }
+   \`\`\`
+
+2. **Use server-side filtering** instead of fetching all + filtering client-side:
+   \`\`\`javascript
+   // GOOD: Filter on server
+   panelTodo_searchIssues({ status: "in_progress", priority: "high" })
+
+   // BAD: Fetch all, filter locally
+   const all = panelTodo_listIssues()
+   const filtered = all.filter(...)
+   \`\`\`
+
+3. **Cache read results** when doing multiple operations:
+   \`\`\`javascript
+   // GOOD: Fetch once, reference many times
+   const issues = panelTodo_listIssues()
+   // ... use issues multiple times
+
+   // BAD: Fetch repeatedly
+   panelTodo_listIssues() // to count
+   panelTodo_listIssues() // to display
+   panelTodo_listIssues() // to filter
+   \`\`\`
+
 ## Tool Quick Reference
 
 | Action | Tool |
@@ -415,7 +526,9 @@ Reference issue keys so they're linked:
 | List todos | panelTodo_list |
 | Update todo | panelTodo_update |
 | Create issue | panelTodo_addIssue |
+| **Create many issues** | **panelTodo_batchCreateIssues** |
 | List issues | panelTodo_listIssues |
+| Search issues | panelTodo_searchIssues |
 | Get issue by key | panelTodo_getIssue |
 | Update issue | panelTodo_updateIssue |
 | Complete issue | panelTodo_completeIssue |
@@ -424,8 +537,10 @@ Reference issue keys so they're linked:
 | List comments | panelTodo_listComments |
 | Create tag | panelTodo_createTag |
 | Create sprint | panelTodo_createSprint |
+| Update sprint | panelTodo_updateSprint |
 | Move to sprint | panelTodo_moveIssueToSprint |
-\\\`
+| Get backlog | panelTodo_getBacklog |
+`
       }],
     };
   }
@@ -694,10 +809,7 @@ server.registerTool(
   },
   async ({ status, sprintId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, issues: [], count: 0 },
-      };
+      return proNotConfiguredResponse({ issues: [], count: 0 });
     }
 
     const config = getConfig();
@@ -731,14 +843,81 @@ server.registerTool(
   }
 );
 
+// Tool: Search issues
+server.registerTool(
+  'panelTodo_searchIssues',
+  {
+    title: 'Search Issues',
+    description: 'Search issues with text query and filters. More powerful than listIssues for finding specific issues.',
+    inputSchema: {
+      query: z.string().max(200).optional().describe('Text to search in title and description'),
+      status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Filter by status'),
+      priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Filter by priority'),
+      sprintId: z.string().optional().describe('Filter by sprint ID'),
+      tagIds: z.array(z.string()).optional().describe('Filter by tag IDs (issues with any of these tags)'),
+      limit: z.number().max(100).optional().describe('Max results (default 100)'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      issues: z.array(z.object({
+        id: z.string(),
+        key: z.string(),
+        title: z.string(),
+        status: z.string(),
+        priority: z.string(),
+      })),
+      count: z.number(),
+    },
+  },
+  async ({ query, status, priority, sprintId, tagIds, limit }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse({ issues: [], count: 0 });
+    }
+
+    const config = getConfig();
+
+    try {
+      // Build query params
+      const params = new URLSearchParams();
+      if (query) params.append('q', query);
+      if (status) params.append('status', status);
+      if (priority) params.append('priority', priority);
+      if (sprintId) params.append('sprintId', sprintId);
+      if (tagIds && tagIds.length > 0) params.append('tagIds', tagIds.join(','));
+      if (limit) params.append('limit', String(limit));
+
+      const queryString = params.toString();
+      const url = `/v1/projects/${config.projectId}/issues${queryString ? `?${queryString}` : ''}`;
+
+      const data = await apiRequest(url);
+      const issues = data.issues || [];
+
+      const issueList = issues
+        .map(i => `[${i.key}] ${i.title} (${i.status}, ${i.priority})`)
+        .join('\n');
+
+      return {
+        content: [{ type: 'text', text: issues.length > 0 ? `Found ${issues.length} issue(s):\n${issueList}` : 'No matching issues found.' }],
+        structuredContent: { success: true, issues, count: issues.length },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error searching issues: ${err.message}` }],
+        structuredContent: { success: false, issues: [], count: 0 },
+      };
+    }
+  }
+);
+
 // Tool: Add issue
 server.registerTool(
   'panelTodo_addIssue',
   {
     title: 'Add Issue',
-    description: 'Create a new issue in Panel Todo Pro',
+    description: 'Create a new issue in Panel Todo Pro. For sprint planning, include a description with: (1) implementation approach, (2) key tasks/steps, and (3) acceptance criteria.',
     inputSchema: {
       title: z.string().min(1).describe('Issue title'),
+      description: z.string().max(10000).optional().describe('Issue description with implementation details, approach, and acceptance criteria (supports markdown)'),
       priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Priority level'),
       status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Initial status'),
       sprintId: z.string().optional().describe('Sprint to assign to'),
@@ -753,18 +932,16 @@ server.registerTool(
       message: z.string(),
     },
   },
-  async ({ title, priority = 'medium', status = 'todo', sprintId }) => {
+  async ({ title, description, priority = 'medium', status = 'todo', sprintId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     const config = getConfig();
 
     try {
       const body = { title, priority, status };
+      if (description) body.description = description;
       if (sprintId) body.sprintId = sprintId;
 
       const issue = await apiRequest(`/v1/projects/${config.projectId}/issues`, {
@@ -785,6 +962,66 @@ server.registerTool(
   }
 );
 
+// Tool: Batch create issues
+server.registerTool(
+  'panelTodo_batchCreateIssues',
+  {
+    title: 'Batch Create Issues',
+    description: 'Create multiple issues at once. Useful for sprint planning when creating many related issues.',
+    inputSchema: {
+      issues: z.array(z.object({
+        title: z.string().min(1).describe('Issue title'),
+        description: z.string().max(10000).optional().describe('Issue description'),
+        priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Priority level'),
+        status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Initial status'),
+      })).min(1).max(50).describe('Issues to create (max 50)'),
+      sprintId: z.string().optional().describe('Assign all issues to this sprint'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      issues: z.array(z.object({
+        id: z.string(),
+        key: z.string(),
+        title: z.string(),
+      })),
+      count: z.number(),
+      message: z.string(),
+    },
+  },
+  async ({ issues, sprintId }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse({ issues: [], count: 0 });
+    }
+
+    const config = getConfig();
+
+    try {
+      const body = { issues };
+      if (sprintId) body.sprintId = sprintId;
+
+      const data = await apiRequest(`/v1/projects/${config.projectId}/issues/batch`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+
+      const created = data.issues || [];
+      const issueList = created
+        .map(i => `[${i.key}] ${i.title}`)
+        .join('\n');
+
+      return {
+        content: [{ type: 'text', text: `Created ${created.length} issue(s):\n${issueList}` }],
+        structuredContent: { success: true, issues: created, count: created.length, message: 'Issues created' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error creating issues: ${err.message}` }],
+        structuredContent: { success: false, issues: [], count: 0, message: err.message },
+      };
+    }
+  }
+);
+
 // Tool: Update issue
 server.registerTool(
   'panelTodo_updateIssue',
@@ -794,6 +1031,7 @@ server.registerTool(
     inputSchema: {
       issueId: z.string().describe('Issue ID to update'),
       title: z.string().optional().describe('New title'),
+      description: z.string().max(10000).optional().describe('New description (supports markdown)'),
       status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('New status'),
       priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('New priority'),
       sprintId: z.string().optional().describe('New sprint (empty string to remove from sprint)'),
@@ -803,17 +1041,15 @@ server.registerTool(
       message: z.string(),
     },
   },
-  async ({ issueId, title, status, priority, sprintId }) => {
+  async ({ issueId, title, description, status, priority, sprintId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
       const updates = {};
       if (title !== undefined) updates.title = title;
+      if (description !== undefined) updates.description = description;
       if (status !== undefined) updates.status = status;
       if (priority !== undefined) updates.priority = priority;
       if (sprintId !== undefined) updates.sprintId = sprintId || null;
@@ -852,10 +1088,7 @@ server.registerTool(
   },
   async ({ issueId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -893,10 +1126,7 @@ server.registerTool(
   },
   async ({ issueId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -941,10 +1171,7 @@ server.registerTool(
   },
   async ({ issueId, key }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     if (!issueId && !key) {
@@ -1009,10 +1236,7 @@ server.registerTool(
   },
   async ({ status }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, sprints: [], count: 0 },
-      };
+      return proNotConfiguredResponse({ sprints: [], count: 0 });
     }
 
     const config = getConfig();
@@ -1065,10 +1289,7 @@ server.registerTool(
   },
   async ({ name, startDate, endDate }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     const config = getConfig();
@@ -1112,10 +1333,7 @@ server.registerTool(
   },
   async ({ sprintId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1154,10 +1372,7 @@ server.registerTool(
   },
   async ({ sprintId, moveIncomplete = true }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1173,6 +1388,57 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error completing sprint: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Update sprint
+server.registerTool(
+  'panelTodo_updateSprint',
+  {
+    title: 'Update Sprint',
+    description: 'Update an existing sprint name or dates',
+    inputSchema: {
+      sprintId: z.string().describe('Sprint ID to update'),
+      name: z.string().min(1).max(100).optional().describe('New sprint name'),
+      startDate: z.string().optional().describe('New start date (ISO format, e.g., 2024-01-15)'),
+      endDate: z.string().optional().describe('New end date (ISO format, e.g., 2024-01-29)'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+      sprint: z.object({
+        id: z.string(),
+        name: z.string(),
+        status: z.string(),
+      }).optional(),
+    },
+  },
+  async ({ sprintId, name, startDate, endDate }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      const body = {};
+      if (name !== undefined) body.name = name;
+      if (startDate !== undefined) body.startDate = new Date(startDate).toISOString();
+      if (endDate !== undefined) body.endDate = new Date(endDate).toISOString();
+
+      const sprint = await apiRequest(`/v1/sprints/${sprintId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+
+      return {
+        content: [{ type: 'text', text: `Updated sprint: ${sprint.name}` }],
+        structuredContent: { success: true, message: 'Sprint updated', sprint },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error updating sprint: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }
@@ -1196,10 +1462,7 @@ server.registerTool(
   },
   async ({ issueId, sprintId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1216,6 +1479,73 @@ server.registerTool(
       return {
         content: [{ type: 'text', text: `Error moving issue: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Get backlog issues
+server.registerTool(
+  'panelTodo_getBacklog',
+  {
+    title: 'Get Backlog',
+    description: 'List issues not assigned to any active sprint (backlog items)',
+    inputSchema: {
+      status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Filter by status'),
+      priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Filter by priority'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      issues: z.array(z.object({
+        id: z.string(),
+        key: z.string(),
+        title: z.string(),
+        status: z.string(),
+        priority: z.string(),
+      })),
+      count: z.number(),
+    },
+  },
+  async ({ status, priority }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse({ issues: [], count: 0 });
+    }
+
+    const config = getConfig();
+
+    try {
+      // First, get all sprints to find the default Backlog sprint
+      const sprintsData = await apiRequest(`/v1/projects/${config.projectId}/sprints`);
+      const sprints = sprintsData.sprints || [];
+      const backlogSprint = sprints.find(s => s.is_default);
+
+      // Get all issues in the project
+      const data = await apiRequest(`/v1/projects/${config.projectId}/issues`);
+      let issues = data.issues || [];
+
+      // Filter for backlog issues (either in default sprint or no sprint)
+      if (backlogSprint) {
+        issues = issues.filter(i => i.sprint_id === backlogSprint.id);
+      } else {
+        issues = issues.filter(i => !i.sprint_id);
+      }
+
+      // Apply additional filters
+      if (status) issues = issues.filter(i => i.status === status);
+      if (priority) issues = issues.filter(i => i.priority === priority);
+
+      const issueList = issues
+        .map(i => `[${i.key}] ${i.title} (${i.status}, ${i.priority})`)
+        .join('\n');
+
+      return {
+        content: [{ type: 'text', text: issues.length > 0 ? `Backlog (${issues.length} issue(s)):\n${issueList}` : 'Backlog is empty.' }],
+        structuredContent: { success: true, issues, count: issues.length },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error fetching backlog: ${err.message}` }],
+        structuredContent: { success: false, issues: [], count: 0 },
       };
     }
   }
@@ -1246,10 +1576,7 @@ server.registerTool(
   },
   async () => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, projects: [], currentProjectId: null, count: 0 },
-      };
+      return proNotConfiguredResponse({ projects: [], currentProjectId: null, count: 0 });
     }
 
     try {
@@ -1295,10 +1622,7 @@ server.registerTool(
   },
   async ({ projectId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1350,10 +1674,7 @@ server.registerTool(
   },
   async ({ name, key, description, switchTo = true }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1409,10 +1730,7 @@ server.registerTool(
   },
   async () => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, tags: [], count: 0 },
-      };
+      return proNotConfiguredResponse({ tags: [], count: 0 });
     }
 
     try {
@@ -1459,10 +1777,7 @@ server.registerTool(
   },
   async ({ name, color }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1508,10 +1823,7 @@ server.registerTool(
   },
   async ({ tagId, name, color }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1553,10 +1865,7 @@ server.registerTool(
   },
   async ({ tagId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1594,10 +1903,7 @@ server.registerTool(
   },
   async ({ issueId, tagId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1636,10 +1942,7 @@ server.registerTool(
   },
   async ({ issueId, tagId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1685,10 +1988,7 @@ server.registerTool(
   },
   async ({ issueId }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, comments: [], count: 0 },
-      };
+      return proNotConfiguredResponse({ comments: [], count: 0 });
     }
 
     try {
@@ -1734,10 +2034,7 @@ server.registerTool(
   },
   async ({ issueId, content }) => {
     if (!isProEnabled()) {
-      return {
-        content: [{ type: 'text', text: 'Pro not configured. Use panelTodo_configure first.' }],
-        structuredContent: { success: false, message: 'Pro not configured' },
-      };
+      return proNotConfiguredResponse();
     }
 
     try {
@@ -1801,13 +2098,28 @@ server.registerTool(
       }
     }
 
-    const lines = [
-      proEnabled
-        ? `Pro enabled - Project: ${projectKey ? `${projectKey} (${projectName})` : config.projectId} [source: ${projectIdSource}]`
-        : 'Free mode (local todos only)',
-      `API: ${apiUrl}`,
-      `Todo storage: ${todoFile}`,
-    ];
+    const lines = [];
+
+    if (proEnabled) {
+      lines.push(`✓ Pro enabled - Project: ${projectKey ? `${projectKey} (${projectName})` : config.projectId}`);
+      lines.push(`  API: ${apiUrl}`);
+      lines.push(`  Todo storage: ${todoFile}`);
+      lines.push('');
+      lines.push('Available: All Pro features (issues, sprints, projects, tags, comments)');
+    } else {
+      lines.push('○ Free mode (local todos only)');
+      lines.push(`  Todo storage: ${todoFile}`);
+      lines.push('');
+      lines.push('Available: panelTodo_add, panelTodo_list, panelTodo_complete, panelTodo_remove');
+      lines.push('');
+      lines.push('TO ENABLE PRO FEATURES:');
+      lines.push('1. User subscribes at https://panel-todo.com');
+      lines.push('2. User creates API token in VS Code: Panel Todo → Account → Create API Token');
+      lines.push('3. User shares the token (starts with "pt_")');
+      lines.push('4. You call: panelTodo_configure({ projectId: "...", token: "pt_..." })');
+      lines.push('');
+      lines.push('Pro features: Issues with status/priority, sprints, projects, tags, comments, cloud sync');
+    }
 
     return {
       content: [{ type: 'text', text: lines.join('\n') }],

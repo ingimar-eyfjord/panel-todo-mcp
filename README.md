@@ -2,7 +2,7 @@
 
 MCP (Model Context Protocol) server for Panel Todo, enabling AI assistants like Claude to manage todos, issues, sprints, and more.
 
-**29 tools** for complete task and project management.
+**33 tools** for complete task and project management.
 
 ## Installation
 
@@ -81,7 +81,7 @@ panelTodo_addComment({
 panelTodo_completeIssue({ issueId: "<id>" })
 ```
 
-## Available Tools (29)
+## Available Tools (33)
 
 ### Free Tier - Local Storage (5 tools)
 
@@ -100,26 +100,30 @@ panelTodo_completeIssue({ issueId: "<id>" })
 | `panelTodo_configure` | Set up Pro connection (API URL, token, project) |
 | `panelTodo_status` | Check configuration and Pro status |
 
-### Issues - Pro (6 tools)
+### Issues - Pro (8 tools)
 
 | Tool | Description |
 |------|-------------|
 | `panelTodo_listIssues` | List all issues (filter by status/sprint) |
+| `panelTodo_searchIssues` | Search issues with text query and filters |
 | `panelTodo_getIssue` | Get single issue by ID or key (e.g., "PT-1") |
 | `panelTodo_addIssue` | Create a new issue |
+| `panelTodo_batchCreateIssues` | Create multiple issues at once |
 | `panelTodo_updateIssue` | Update an existing issue |
 | `panelTodo_completeIssue` | Mark an issue as done |
 | `panelTodo_deleteIssue` | Permanently delete an issue |
 
-### Sprints - Pro (5 tools)
+### Sprints - Pro (7 tools)
 
 | Tool | Description |
 |------|-------------|
 | `panelTodo_listSprints` | List all sprints |
 | `panelTodo_createSprint` | Create a new sprint |
+| `panelTodo_updateSprint` | Update sprint name or dates |
 | `panelTodo_startSprint` | Start a sprint (planning -> active) |
 | `panelTodo_completeSprint` | Complete a sprint |
 | `panelTodo_moveIssueToSprint` | Move an issue to a sprint |
+| `panelTodo_getBacklog` | Get issues in the backlog |
 
 ### Projects - Pro (3 tools)
 
@@ -243,4 +247,4 @@ The MCP server provides an `instructions` resource with detailed guidelines for 
 ## Related
 
 - [panel-todo](https://github.com/ingimar-eyfjord/panel-todo) - VS Code extension
-- [paneltodo.com](https://paneltodo.com) - Pro subscription
+- [panel-todo.com](https://panel-todo.com) - Pro subscription
