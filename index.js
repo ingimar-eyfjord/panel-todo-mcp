@@ -9,23 +9,28 @@
  * Todo Tools (Free - Local Storage):
  *   - panelTodo_add: Add a new todo
  *   - panelTodo_list: List all todos
+ *   - panelTodo_update: Update a todo's text
  *   - panelTodo_complete: Mark a todo as complete
  *   - panelTodo_remove: Remove a todo
  *
  * Issue Tools (Pro - API):
  *   - panelTodo_listIssues: List all issues
  *   - panelTodo_searchIssues: Search issues with text query and filters
+ *   - panelTodo_getIssue: Get issue by ID or key
  *   - panelTodo_addIssue: Create a new issue
  *   - panelTodo_batchCreateIssues: Create multiple issues at once
  *   - panelTodo_updateIssue: Update an issue
  *   - panelTodo_completeIssue: Mark issue as done
+ *   - panelTodo_deleteIssue: Delete an issue
  *
  * Sprint Tools (Pro - API):
  *   - panelTodo_listSprints: List all sprints
+ *   - panelTodo_getSprint: Get sprint details with issues
  *   - panelTodo_createSprint: Create a new sprint
  *   - panelTodo_updateSprint: Update sprint name or dates
  *   - panelTodo_startSprint: Start a sprint
  *   - panelTodo_completeSprint: Complete a sprint
+ *   - panelTodo_deleteSprint: Delete a sprint
  *   - panelTodo_moveIssueToSprint: Move an issue to a sprint
  *   - panelTodo_getBacklog: Get issues in the backlog
  *
@@ -33,6 +38,21 @@
  *   - panelTodo_listProjects: List all your projects
  *   - panelTodo_switchProject: Switch to a different project
  *   - panelTodo_createProject: Create a new project
+ *   - panelTodo_deleteProject: Delete a project
+ *
+ * Tag Tools (Pro - API):
+ *   - panelTodo_listTags: List all tags
+ *   - panelTodo_createTag: Create a new tag
+ *   - panelTodo_updateTag: Update a tag
+ *   - panelTodo_deleteTag: Delete a tag
+ *   - panelTodo_addTagToIssue: Add tag to issue
+ *   - panelTodo_removeTagFromIssue: Remove tag from issue
+ *
+ * Comment Tools (Pro - API):
+ *   - panelTodo_listComments: List comments on an issue
+ *   - panelTodo_addComment: Add a comment
+ *   - panelTodo_updateComment: Update a comment
+ *   - panelTodo_deleteComment: Delete a comment
  *
  * Config Tools:
  *   - panelTodo_configure: Set up Pro connection
@@ -312,7 +332,7 @@ function writeTodos(todos) {
 // Initialize MCP server
 const server = new McpServer({
   name: 'panel-todo',
-  version: '0.2.0',
+  version: '1.0.0',
   description: `Panel Todo - Persistent task management for AI-assisted coding sessions.
 
 TWO TIERS:
@@ -535,11 +555,16 @@ The API has a rate limit of **100 requests per minute** (shared across all MCP i
 | Delete issue | panelTodo_deleteIssue |
 | Add comment | panelTodo_addComment |
 | List comments | panelTodo_listComments |
+| Update comment | panelTodo_updateComment |
+| Delete comment | panelTodo_deleteComment |
 | Create tag | panelTodo_createTag |
+| Get sprint | panelTodo_getSprint |
 | Create sprint | panelTodo_createSprint |
 | Update sprint | panelTodo_updateSprint |
+| Delete sprint | panelTodo_deleteSprint |
 | Move to sprint | panelTodo_moveIssueToSprint |
 | Get backlog | panelTodo_getBacklog |
+| Delete project | panelTodo_deleteProject |
 `
       }],
     };
@@ -717,8 +742,7 @@ server.registerTool(
       todo: z.object({
         id: z.string(),
         text: z.string(),
-        completed: z.boolean(),
-        createdAt: z.string(),
+        createdAt: z.number(),
       }).optional(),
     },
   },
@@ -1266,6 +1290,54 @@ server.registerTool(
   }
 );
 
+// Tool: Get sprint details
+server.registerTool(
+  'panelTodo_getSprint',
+  {
+    title: 'Get Sprint',
+    description: 'Get details of a specific sprint including its issues',
+    inputSchema: {
+      sprintId: z.string().describe('Sprint ID to get'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      sprint: z.object({
+        id: z.string(),
+        name: z.string(),
+        status: z.string(),
+        start_date: z.string().nullable(),
+        end_date: z.string().nullable(),
+        issues: z.array(z.object({
+          id: z.string(),
+          key: z.string(),
+          title: z.string(),
+          status: z.string(),
+        })),
+      }).optional(),
+      message: z.string().optional(),
+    },
+  },
+  async ({ sprintId }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      const sprint = await apiRequest(`/v1/sprints/${sprintId}`);
+
+      return {
+        content: [{ type: 'text', text: `Sprint: ${sprint.name} (${sprint.status}) - ${sprint.issues?.length || 0} issues` }],
+        structuredContent: { success: true, sprint },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error getting sprint: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
 // Tool: Create sprint
 server.registerTool(
   'panelTodo_createSprint',
@@ -1388,6 +1460,44 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error completing sprint: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Delete sprint
+server.registerTool(
+  'panelTodo_deleteSprint',
+  {
+    title: 'Delete Sprint',
+    description: 'Delete a sprint. Cannot delete the default Backlog sprint.',
+    inputSchema: {
+      sprintId: z.string().describe('Sprint ID to delete'),
+      moveToBacklog: z.boolean().optional().describe('Move issues to backlog before deleting (default: true)'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+    },
+  },
+  async ({ sprintId, moveToBacklog = true }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      await apiRequest(`/v1/sprints/${sprintId}?moveToBacklog=${moveToBacklog}`, {
+        method: 'DELETE',
+      });
+
+      return {
+        content: [{ type: 'text', text: `Sprint ${sprintId} deleted` }],
+        structuredContent: { success: true, message: 'Sprint deleted' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error deleting sprint: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }
@@ -1701,6 +1811,50 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error creating project: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Delete project
+server.registerTool(
+  'panelTodo_deleteProject',
+  {
+    title: 'Delete Project',
+    description: 'Permanently delete a project and all its issues, sprints, and tags. This action cannot be undone.',
+    inputSchema: {
+      projectId: z.string().describe('Project ID to delete'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+    },
+  },
+  async ({ projectId }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      await apiRequest(`/v1/projects/${projectId}`, {
+        method: 'DELETE',
+      });
+
+      // If the deleted project was the current one, clear the config
+      const config = getConfig();
+      if (config.projectId === projectId) {
+        config.projectId = null;
+        saveConfig(config);
+      }
+
+      return {
+        content: [{ type: 'text', text: `Project ${projectId} deleted` }],
+        structuredContent: { success: true, message: 'Project deleted' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error deleting project: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }
@@ -2050,6 +2204,89 @@ server.registerTool(
     } catch (err) {
       return {
         content: [{ type: 'text', text: `Error adding comment: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Update comment
+server.registerTool(
+  'panelTodo_updateComment',
+  {
+    title: 'Update Comment',
+    description: 'Update the content of an existing comment. You can only update your own comments.',
+    inputSchema: {
+      issueId: z.string().describe('Issue ID the comment belongs to'),
+      commentId: z.string().describe('Comment ID to update'),
+      content: z.string().min(1).describe('New comment text'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      comment: z.object({
+        id: z.string(),
+        content: z.string(),
+        updated_at: z.string(),
+      }).optional(),
+      message: z.string(),
+    },
+  },
+  async ({ issueId, commentId, content }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      const comment = await apiRequest(`/v1/issues/${issueId}/comments/${commentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content }),
+      });
+
+      return {
+        content: [{ type: 'text', text: `Comment updated` }],
+        structuredContent: { success: true, comment, message: 'Comment updated' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error updating comment: ${err.message}` }],
+        structuredContent: { success: false, message: err.message },
+      };
+    }
+  }
+);
+
+// Tool: Delete comment
+server.registerTool(
+  'panelTodo_deleteComment',
+  {
+    title: 'Delete Comment',
+    description: 'Delete a comment from an issue. You can only delete your own comments.',
+    inputSchema: {
+      issueId: z.string().describe('Issue ID the comment belongs to'),
+      commentId: z.string().describe('Comment ID to delete'),
+    },
+    outputSchema: {
+      success: z.boolean(),
+      message: z.string(),
+    },
+  },
+  async ({ issueId, commentId }) => {
+    if (!isProEnabled()) {
+      return proNotConfiguredResponse();
+    }
+
+    try {
+      await apiRequest(`/v1/issues/${issueId}/comments/${commentId}`, {
+        method: 'DELETE',
+      });
+
+      return {
+        content: [{ type: 'text', text: `Comment deleted` }],
+        structuredContent: { success: true, message: 'Comment deleted' },
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: `Error deleting comment: ${err.message}` }],
         structuredContent: { success: false, message: err.message },
       };
     }

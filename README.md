@@ -1,16 +1,17 @@
-# Panel Todo MCP Server
+# Panel Todo MCP
 
-MCP (Model Context Protocol) server for Panel Todo, enabling AI assistants like Claude to manage todos, issues, sprints, and more.
+[![npm version](https://img.shields.io/npm/v/panel-todo-mcp.svg)](https://www.npmjs.com/package/panel-todo-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**33 tools** for complete task and project management.
+MCP server for [Panel Todo](https://panel-todo.com) — lets AI assistants manage your tasks, issues, and sprints directly in VS Code.
 
-## Installation
+## Install
 
 ```bash
-npm install panel-todo-mcp
+npm install -g panel-todo-mcp
 ```
 
-## Usage
+## Setup
 
 Add to your MCP configuration (Claude Code, Cursor, etc.):
 
@@ -28,62 +29,16 @@ Add to your MCP configuration (Claude Code, Cursor, etc.):
 }
 ```
 
-## For AI Assistants
+## What It Does
 
-### The Context Problem
+Panel Todo is a VS Code extension that puts a todo list in your Panel area (next to Terminal and Problems). This MCP server gives AI assistants direct access to that task list.
 
-Your internal todo list dies when the session ends. The user can't see it. The next AI session starts from scratch.
+- **Free tier**: 5 tools for local todos stored in `.vscode/panel-todo.json`
+- **Pro tier**: 38 tools for issues, sprints, projects, tags, and comments with cloud sync
 
-**Panel Todo solves this** by persisting tasks to disk, showing them in VS Code, and letting future sessions continue where you left off.
+## Tools
 
-### The Golden Rule
-
-> **You can use your internal todo system for your own tracking.**
-> **But ALWAYS ALSO write to Panel Todo when it's available.**
-
-This maintains context across sessions - the whole point of the tool.
-
-### At Session Start (ALWAYS DO THIS)
-
-```javascript
-// 1. Check configuration
-panelTodo_status()
-
-// 2. Read existing work
-panelTodo_listIssues()  // Pro
-panelTodo_list()        // Free
-
-// 3. Check in-progress items
-panelTodo_listIssues({ status: "in_progress" })
-
-// 4. Ask user if they want to continue existing work
-```
-
-### During Work
-
-```javascript
-// Create trackable issue
-panelTodo_addIssue({
-  title: "Fix authentication bug",
-  priority: "high"
-})
-
-// Update as you progress
-panelTodo_updateIssue({ issueId: "<id>", status: "in_progress" })
-
-// Document decisions for future sessions
-panelTodo_addComment({
-  issueId: "<id>",
-  content: "Using JWT because existing auth middleware expects it"
-})
-
-// Complete when done
-panelTodo_completeIssue({ issueId: "<id>" })
-```
-
-## Available Tools (33)
-
-### Free Tier - Local Storage (5 tools)
+### Free Tier — Local Storage (5 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -97,113 +52,107 @@ panelTodo_completeIssue({ issueId: "<id>" })
 
 | Tool | Description |
 |------|-------------|
-| `panelTodo_configure` | Set up Pro connection (API URL, token, project) |
+| `panelTodo_configure` | Set up Pro connection |
 | `panelTodo_status` | Check configuration and Pro status |
 
-### Issues - Pro (8 tools)
+### Issues — Pro (8 tools)
 
 | Tool | Description |
 |------|-------------|
 | `panelTodo_listIssues` | List all issues (filter by status/sprint) |
 | `panelTodo_searchIssues` | Search issues with text query and filters |
-| `panelTodo_getIssue` | Get single issue by ID or key (e.g., "PT-1") |
+| `panelTodo_getIssue` | Get issue by ID or key (e.g., "PT-1") |
 | `panelTodo_addIssue` | Create a new issue |
 | `panelTodo_batchCreateIssues` | Create multiple issues at once |
-| `panelTodo_updateIssue` | Update an existing issue |
-| `panelTodo_completeIssue` | Mark an issue as done |
-| `panelTodo_deleteIssue` | Permanently delete an issue |
+| `panelTodo_updateIssue` | Update an issue |
+| `panelTodo_completeIssue` | Mark issue as done |
+| `panelTodo_deleteIssue` | Delete an issue |
 
-### Sprints - Pro (7 tools)
+### Sprints — Pro (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `panelTodo_listSprints` | List all sprints |
+| `panelTodo_getSprint` | Get sprint details with issues |
 | `panelTodo_createSprint` | Create a new sprint |
 | `panelTodo_updateSprint` | Update sprint name or dates |
-| `panelTodo_startSprint` | Start a sprint (planning -> active) |
+| `panelTodo_startSprint` | Start a sprint |
 | `panelTodo_completeSprint` | Complete a sprint |
+| `panelTodo_deleteSprint` | Delete a sprint |
 | `panelTodo_moveIssueToSprint` | Move an issue to a sprint |
-| `panelTodo_getBacklog` | Get issues in the backlog |
+| `panelTodo_getBacklog` | Get backlog issues |
 
-### Projects - Pro (3 tools)
+### Projects — Pro (4 tools)
 
 | Tool | Description |
 |------|-------------|
-| `panelTodo_listProjects` | List all your projects |
+| `panelTodo_listProjects` | List all projects |
 | `panelTodo_switchProject` | Switch to a different project |
 | `panelTodo_createProject` | Create a new project |
+| `panelTodo_deleteProject` | Delete a project |
 
-### Tags - Pro (6 tools)
+### Tags — Pro (6 tools)
 
 | Tool | Description |
 |------|-------------|
-| `panelTodo_listTags` | List all tags for the current project |
+| `panelTodo_listTags` | List all tags |
 | `panelTodo_createTag` | Create a new tag |
-| `panelTodo_updateTag` | Update a tag's name or color |
+| `panelTodo_updateTag` | Update a tag |
 | `panelTodo_deleteTag` | Delete a tag |
-| `panelTodo_addTagToIssue` | Add a tag to an issue |
-| `panelTodo_removeTagFromIssue` | Remove a tag from an issue |
+| `panelTodo_addTagToIssue` | Add tag to issue |
+| `panelTodo_removeTagFromIssue` | Remove tag from issue |
 
-### Comments - Pro (2 tools)
+### Comments — Pro (4 tools)
 
 | Tool | Description |
 |------|-------------|
 | `panelTodo_listComments` | List comments on an issue |
-| `panelTodo_addComment` | Add a comment to an issue |
+| `panelTodo_addComment` | Add a comment |
+| `panelTodo_updateComment` | Update a comment |
+| `panelTodo_deleteComment` | Delete a comment |
 
-## Workflow Examples
+## Examples
 
-### Starting a Session
+### Quick todos (Free)
 
 ```javascript
-// 1. Check configuration
-panelTodo_status()
+// Add a task
+panelTodo_add({ text: "Fix login bug" })
 
-// 2. See current issues
-panelTodo_listIssues()
+// Check your list
+panelTodo_list()
 
-// 3. Check what's in progress
-panelTodo_listIssues({ status: "in_progress" })
+// Done
+panelTodo_complete({ id: "<id>" })
 ```
 
-### Working on a Feature
+### Issue tracking (Pro)
 
 ```javascript
-// 1. Create issue for the work
+// Create an issue
 panelTodo_addIssue({
   title: "Add dark mode support",
-  priority: "medium"
+  priority: "high"
 })
-// Returns: { issue: { key: "PT-3", ... } }
+// Returns: { issue: { key: "PT-3", id: "..." } }
 
-// 2. Start working on it
+// Start working on it
 panelTodo_updateIssue({
   issueId: "<id>",
   status: "in_progress"
 })
 
-// 3. Add context as you work
+// Add notes
 panelTodo_addComment({
   issueId: "<id>",
-  content: "Implemented CSS variables for theming"
+  content: "Using CSS variables for theming"
 })
 
-// 4. Complete when done
+// Complete
 panelTodo_completeIssue({ issueId: "<id>" })
 ```
 
-### Using Tags
-
-```javascript
-// Create tags for categorization
-panelTodo_createTag({ name: "bug", color: "#FF5733" })
-panelTodo_createTag({ name: "feature", color: "#33FF57" })
-
-// Apply to issues
-panelTodo_addTagToIssue({ issueId: "<id>", tagId: "<tag-id>" })
-```
-
-### Sprint Planning
+### Sprint planning (Pro)
 
 ```javascript
 // Create a sprint
@@ -213,8 +162,15 @@ panelTodo_createSprint({
   endDate: "2024-01-29"
 })
 
-// Move issues into it
-panelTodo_moveIssueToSprint({ issueId: "<id>", sprintId: "<sprint-id>" })
+// Add issues in bulk
+panelTodo_batchCreateIssues({
+  sprintId: "<sprint-id>",
+  issues: [
+    { title: "User authentication", priority: "high" },
+    { title: "Password reset flow", priority: "medium" },
+    { title: "Session management", priority: "medium" }
+  ]
+})
 
 // Start the sprint
 panelTodo_startSprint({ sprintId: "<sprint-id>" })
@@ -222,16 +178,19 @@ panelTodo_startSprint({ sprintId: "<sprint-id>" })
 
 ## Pro Configuration
 
-To use Pro features, configure the MCP server:
+To use Pro features:
 
 ```javascript
 panelTodo_configure({
   projectId: "your-project-id",
-  token: "your-auth-token"
+  token: "pt_your_api_token"
 })
 ```
 
-For development mode:
+Get your token from the Panel Todo VS Code extension: **Account tab → Create API Token**
+
+For local development:
+
 ```javascript
 panelTodo_configure({
   projectId: "your-project-id",
@@ -240,11 +199,12 @@ panelTodo_configure({
 })
 ```
 
-## Resources
+## Links
 
-The MCP server provides an `instructions` resource with detailed guidelines for AI assistants. Access it at `panel-todo://instructions`.
+- [Panel Todo Extension](https://marketplace.visualstudio.com/items?itemName=paneltodo.panel-todo) — VS Code Marketplace
+- [panel-todo.com](https://panel-todo.com) — Pro subscription
+- [GitHub](https://github.com/ingimar-eyfjord/panel-todo) — Source code
 
-## Related
+## License
 
-- [panel-todo](https://github.com/ingimar-eyfjord/panel-todo) - VS Code extension
-- [panel-todo.com](https://panel-todo.com) - Pro subscription
+MIT
