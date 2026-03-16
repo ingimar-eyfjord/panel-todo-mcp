@@ -1,7 +1,7 @@
 {
   "name": "panel-todo-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for Panel Todo - 38 tools for AI assistants to manage todos, issues, sprints, tags, and comments",
+  "version": "1.1.0",
+  "description": "MCP server for Panel Todo - 38 MCP tools for AI assistants to manage todos, issues, sprints, and coordinate parallel sessions",
   "type": "module",
   "bin": {
     "panel-todo-mcp": "./index.js"

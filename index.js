@@ -817,6 +817,8 @@ server.registerTool(
     inputSchema: {
       status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Filter by status'),
       sprintId: z.string().optional().describe('Filter by sprint ID'),
+      assignee: z.string().optional().describe("Filter by assignee (session name). Use 'unassigned' to find unclaimed issues"),
+      isBlocked: z.boolean().optional().describe('Filter by blocked status. false = only unblocked issues ready to work on'),
     },
     outputSchema: {
       success: z.boolean(),
@@ -827,11 +829,14 @@ server.registerTool(
         status: z.string(),
         priority: z.string(),
         sprint_id: z.string().nullable(),
+        assignee: z.string().nullable().optional(),
+        is_blocked: z.boolean().optional(),
+        blocked_by: z.array(z.string()).optional(),
       })),
       count: z.number(),
     },
   },
-  async ({ status, sprintId }) => {
+  async ({ status, sprintId, assignee, isBlocked }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse({ issues: [], count: 0 });
     }
@@ -839,19 +844,28 @@ server.registerTool(
     const config = getConfig();
 
     try {
-      const data = await apiRequest(`/v1/projects/${config.projectId}/issues`);
-      let issues = data.issues || [];
-
-      // Apply filters
-      if (status) {
-        issues = issues.filter(i => i.status === status);
+      const params = new URLSearchParams();
+      if (status) params.append('status', status);
+      if (sprintId) params.append('sprintId', sprintId);
+      if (assignee !== undefined) {
+        params.append('assignee', assignee === 'unassigned' ? '' : assignee);
       }
-      if (sprintId) {
-        issues = issues.filter(i => i.sprint_id === sprintId);
+      if (isBlocked !== undefined) {
+        params.append('isBlocked', String(isBlocked));
       }
+      const queryString = params.toString();
+      const url = `/v1/projects/${config.projectId}/issues${queryString ? `?${queryString}` : ''}`;
+      const data = await apiRequest(url);
+      const issues = data.issues || [];
 
       const issueList = issues
-        .map(i => `[${i.key}] ${i.title} (${i.status}, ${i.priority})`)
+        .map(i => {
+          let line = `[${i.key}] ${i.title} (${i.status}, ${i.priority})`;
+          if (i.assignee) line += ` | assignee: ${i.assignee}`;
+          if (i.is_blocked === true) line += ' | BLOCKED';
+          if (i.blocked_by && i.blocked_by.length > 0) line += ` | blocked by ${i.blocked_by.join(', ')}`;
+          return line;
+        })
         .join('\n');
 
       return {
@@ -880,6 +894,8 @@ server.registerTool(
       sprintId: z.string().optional().describe('Filter by sprint ID'),
       tagIds: z.array(z.string()).optional().describe('Filter by tag IDs (issues with any of these tags)'),
       limit: z.number().max(100).optional().describe('Max results (default 100)'),
+      assignee: z.string().optional().describe("Filter by assignee (session name). Use 'unassigned' to find unclaimed issues"),
+      isBlocked: z.boolean().optional().describe('Filter by blocked status. false = only unblocked issues ready to work on'),
     },
     outputSchema: {
       success: z.boolean(),
@@ -889,11 +905,14 @@ server.registerTool(
         title: z.string(),
         status: z.string(),
         priority: z.string(),
+        assignee: z.string().nullable().optional(),
+        is_blocked: z.boolean().optional(),
+        blocked_by: z.array(z.string()).optional(),
       })),
       count: z.number(),
     },
   },
-  async ({ query, status, priority, sprintId, tagIds, limit }) => {
+  async ({ query, status, priority, sprintId, tagIds, limit, assignee, isBlocked }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse({ issues: [], count: 0 });
     }
@@ -909,6 +928,12 @@ server.registerTool(
       if (sprintId) params.append('sprintId', sprintId);
       if (tagIds && tagIds.length > 0) params.append('tagIds', tagIds.join(','));
       if (limit) params.append('limit', String(limit));
+      if (assignee !== undefined) {
+        params.append('assignee', assignee === 'unassigned' ? '' : assignee);
+      }
+      if (isBlocked !== undefined) {
+        params.append('isBlocked', String(isBlocked));
+      }
 
       const queryString = params.toString();
       const url = `/v1/projects/${config.projectId}/issues${queryString ? `?${queryString}` : ''}`;
@@ -917,7 +942,13 @@ server.registerTool(
       const issues = data.issues || [];
 
       const issueList = issues
-        .map(i => `[${i.key}] ${i.title} (${i.status}, ${i.priority})`)
+        .map(i => {
+          let line = `[${i.key}] ${i.title} (${i.status}, ${i.priority})`;
+          if (i.assignee) line += ` | assignee: ${i.assignee}`;
+          if (i.is_blocked === true) line += ' | BLOCKED';
+          if (i.blocked_by && i.blocked_by.length > 0) line += ` | blocked by ${i.blocked_by.join(', ')}`;
+          return line;
+        })
         .join('\n');
 
       return {
@@ -945,6 +976,8 @@ server.registerTool(
       priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Priority level'),
       status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Initial status'),
       sprintId: z.string().optional().describe('Sprint to assign to'),
+      assignee: z.string().max(100).optional().describe("Assign to a session (e.g., 'session-1', 'builder')"),
+      blockedBy: z.array(z.string()).optional().describe("Issue keys that block this issue (e.g., ['PT-1', 'PT-3'])"),
     },
     outputSchema: {
       success: z.boolean(),
@@ -956,7 +989,7 @@ server.registerTool(
       message: z.string(),
     },
   },
-  async ({ title, description, priority = 'medium', status = 'todo', sprintId }) => {
+  async ({ title, description, priority = 'medium', status = 'todo', sprintId, assignee, blockedBy }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse();
     }
@@ -967,6 +1000,8 @@ server.registerTool(
       const body = { title, priority, status };
       if (description) body.description = description;
       if (sprintId) body.sprintId = sprintId;
+      if (assignee !== undefined) body.assignee = assignee;
+      if (blockedBy !== undefined) body.blockedBy = blockedBy;
 
       const issue = await apiRequest(`/v1/projects/${config.projectId}/issues`, {
         method: 'POST',
@@ -998,6 +1033,8 @@ server.registerTool(
         description: z.string().max(10000).optional().describe('Issue description'),
         priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('Priority level'),
         status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('Initial status'),
+        assignee: z.string().max(100).optional().describe('Assign to a session'),
+        blockedBy: z.array(z.string()).optional().describe('Issue keys that block this issue'),
       })).min(1).max(50).describe('Issues to create (max 50)'),
       sprintId: z.string().optional().describe('Assign all issues to this sprint'),
     },
@@ -1059,13 +1096,14 @@ server.registerTool(
       status: z.enum(['todo', 'in_progress', 'review', 'done']).optional().describe('New status'),
       priority: z.enum(['low', 'medium', 'high', 'critical']).optional().describe('New priority'),
       sprintId: z.string().optional().describe('New sprint (empty string to remove from sprint)'),
+      assignee: z.union([z.string().max(100), z.null()]).optional().describe('Set assignee (session name) or null to unassign'),
     },
     outputSchema: {
       success: z.boolean(),
       message: z.string(),
     },
   },
-  async ({ issueId, title, description, status, priority, sprintId }) => {
+  async ({ issueId, title, description, status, priority, sprintId, assignee }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse();
     }
@@ -1077,6 +1115,7 @@ server.registerTool(
       if (status !== undefined) updates.status = status;
       if (priority !== undefined) updates.priority = priority;
       if (sprintId !== undefined) updates.sprintId = sprintId || null;
+      if (assignee !== undefined) updates.assignee = assignee;
 
       await apiRequest(`/v1/issues/${issueId}`, {
         method: 'PATCH',
@@ -1189,6 +1228,9 @@ server.registerTool(
         title: z.string(),
         status: z.string(),
         priority: z.string(),
+        assignee: z.string().nullable().optional(),
+        is_blocked: z.boolean().optional(),
+        blocked_by: z.array(z.string()).optional(),
       }).optional(),
       message: z.string().optional(),
     },
@@ -1208,26 +1250,15 @@ server.registerTool(
     const config = getConfig();
 
     try {
-      // If key is provided, search for the issue
-      if (key && !issueId) {
-        const data = await apiRequest(`/v1/projects/${config.projectId}/issues`);
-        const issue = (data.issues || []).find(i => i.key.toLowerCase() === key.toLowerCase());
-        if (!issue) {
-          return {
-            content: [{ type: 'text', text: `Issue with key "${key}" not found` }],
-            structuredContent: { success: false, message: 'Issue not found' },
-          };
-        }
-        return {
-          content: [{ type: 'text', text: `Found issue: [${issue.key}] ${issue.title} (${issue.status})` }],
-          structuredContent: { success: true, issue },
-        };
-      }
-
-      // Get by ID
-      const issue = await apiRequest(`/v1/issues/${issueId}`);
+      // Use the /v1/issues/:issueIdOrKey endpoint which handles both UUIDs and keys
+      const lookupId = issueId || key;
+      const issue = await apiRequest(`/v1/issues/${encodeURIComponent(lookupId)}`);
+      let issueText = `Found issue: [${issue.key}] ${issue.title} (${issue.status})`;
+      if (issue.assignee) issueText += ` | assignee: ${issue.assignee}`;
+      if (issue.is_blocked === true) issueText += ' | BLOCKED';
+      if (issue.blocked_by && issue.blocked_by.length > 0) issueText += ` | blocked by ${issue.blocked_by.join(', ')}`;
       return {
-        content: [{ type: 'text', text: `Found issue: [${issue.key}] ${issue.title} (${issue.status})` }],
+        content: [{ type: 'text', text: issueText }],
         structuredContent: { success: true, issue },
       };
     } catch (err) {
@@ -1304,6 +1335,7 @@ server.registerTool(
       sprint: z.object({
         id: z.string(),
         name: z.string(),
+        description: z.string().nullable().optional(),
         status: z.string(),
         start_date: z.string().nullable(),
         end_date: z.string().nullable(),
@@ -1324,9 +1356,10 @@ server.registerTool(
 
     try {
       const sprint = await apiRequest(`/v1/sprints/${sprintId}`);
+      const issues = sprint.issues || [];
 
       return {
-        content: [{ type: 'text', text: `Sprint: ${sprint.name} (${sprint.status}) - ${sprint.issues?.length || 0} issues` }],
+        content: [{ type: 'text', text: `Sprint: ${sprint.name} (${sprint.status})\n${sprint.description ? 'Description: ' + sprint.description + '\n' : ''}Issues: ${issues.length}` }],
         structuredContent: { success: true, sprint },
       };
     } catch (err) {
@@ -1348,6 +1381,7 @@ server.registerTool(
       name: z.string().min(1).max(100).describe('Sprint name'),
       startDate: z.string().optional().describe('Start date (ISO format, e.g., 2024-01-15)'),
       endDate: z.string().optional().describe('End date (ISO format, e.g., 2024-01-29)'),
+      description: z.string().max(10000).optional().describe('Sprint description with goals, scope, and context for AI sessions'),
     },
     outputSchema: {
       success: z.boolean(),
@@ -1359,7 +1393,7 @@ server.registerTool(
       message: z.string(),
     },
   },
-  async ({ name, startDate, endDate }) => {
+  async ({ name, startDate, endDate, description }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse();
     }
@@ -1370,6 +1404,7 @@ server.registerTool(
       const body = { name };
       if (startDate) body.startDate = new Date(startDate).toISOString();
       if (endDate) body.endDate = new Date(endDate).toISOString();
+      if (description !== undefined) body.description = description;
 
       const sprint = await apiRequest(`/v1/projects/${config.projectId}/sprints`, {
         method: 'POST',
@@ -1509,12 +1544,13 @@ server.registerTool(
   'panelTodo_updateSprint',
   {
     title: 'Update Sprint',
-    description: 'Update an existing sprint name or dates',
+    description: 'Update an existing sprint name, dates, or description',
     inputSchema: {
       sprintId: z.string().describe('Sprint ID to update'),
       name: z.string().min(1).max(100).optional().describe('New sprint name'),
       startDate: z.string().optional().describe('New start date (ISO format, e.g., 2024-01-15)'),
       endDate: z.string().optional().describe('New end date (ISO format, e.g., 2024-01-29)'),
+      description: z.string().max(10000).optional().describe('Sprint description'),
     },
     outputSchema: {
       success: z.boolean(),
@@ -1526,7 +1562,7 @@ server.registerTool(
       }).optional(),
     },
   },
-  async ({ sprintId, name, startDate, endDate }) => {
+  async ({ sprintId, name, startDate, endDate, description }) => {
     if (!isProEnabled()) {
       return proNotConfiguredResponse();
     }
@@ -1536,6 +1572,7 @@ server.registerTool(
       if (name !== undefined) body.name = name;
       if (startDate !== undefined) body.startDate = new Date(startDate).toISOString();
       if (endDate !== undefined) body.endDate = new Date(endDate).toISOString();
+      if (description !== undefined) body.description = description;
 
       const sprint = await apiRequest(`/v1/sprints/${sprintId}`, {
         method: 'PATCH',
@@ -1645,7 +1682,13 @@ server.registerTool(
       if (priority) issues = issues.filter(i => i.priority === priority);
 
       const issueList = issues
-        .map(i => `[${i.key}] ${i.title} (${i.status}, ${i.priority})`)
+        .map(i => {
+          let line = `[${i.key}] ${i.title} (${i.status}, ${i.priority})`;
+          if (i.assignee) line += ` | assignee: ${i.assignee}`;
+          if (i.is_blocked === true) line += ' | BLOCKED';
+          if (i.blocked_by && i.blocked_by.length > 0) line += ` | blocked by ${i.blocked_by.join(', ')}`;
+          return line;
+        })
         .join('\n');
 
       return {
